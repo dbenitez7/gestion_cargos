@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   Activity, Archive, ArrowUpRight, BarChart3, BriefcaseBusiness, Building2,
   ChevronDown, CircleHelp, FileDown, FileUp, History, LayoutDashboard,
-  GitBranch, Menu, Plus, Search, Settings2, ShieldCheck, UserRound, UsersRound, X
+  Check, GitBranch, Menu, Pencil, Plus, Search, Settings2, ShieldCheck, UserRound, UsersRound, X
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
@@ -291,6 +291,14 @@ function App() {
     }) })) })));
   }
 
+  function updatePositionName(positionId: string, name: string) {
+    const nextName = name.trim();
+    if (!nextName) return;
+    setDepartments(current => current.map(department => ({ ...department, areas: department.areas.map(area => ({ ...area, positions: area.positions.map(position => position.id === positionId ? { ...position, name: nextName } : position) })) })));
+    setNotice('Nombre del cargo actualizado');
+    window.setTimeout(() => setNotice(''), 2500);
+  }
+
   function deleteEntity(type: 'department' | 'area' | 'position', id: string) {
     if (type === 'department') setDepartments(current => current.filter(department => department.id !== id));
     if (type === 'area') setDepartments(current => current.map(department => ({ ...department, areas: department.areas.filter(area => area.id !== id) })));
@@ -446,7 +454,7 @@ function App() {
       <section className="page">
         {notice && <div className="toast"><Activity size={16} />{notice}<button onClick={() => setNotice('')}><X size={15} /></button></div>}
         {view === 'dashboard' && <Dashboard stats={stats} onNavigate={setView} />}
-        {view === 'organization' && <Organization departments={filteredOrganizationDepartments.map(department => displayDepartments.find(item => item.id === department.id) || department)} people={people} selected={displayDepartments.find(item => item.id === selected?.id) || selected} selectedId={selectedDepartment} onSelect={setSelectedDepartment} onAdd={setModal} onDelete={deleteEntity} onAssign={assign} />}
+        {view === 'organization' && <Organization departments={filteredOrganizationDepartments.map(department => displayDepartments.find(item => item.id === department.id) || department)} people={people} selected={displayDepartments.find(item => item.id === selected?.id) || selected} selectedId={selectedDepartment} onSelect={setSelectedDepartment} onAdd={setModal} onDelete={deleteEntity} onAssign={assign} onRename={updatePositionName} />}
         {view === 'tree' && <OrganizationTree departments={displayDepartments} people={people} treeViewRef={treeViewRef} onAssign={assign} onExportPdfTree={exportPdfTree} onExportPdfTreeView={exportPdfTreeView} onExportPdfColumns={exportPdfColumns} />}
         {view === 'people' && <People people={people} positions={allPositions} onAdd={() => setModal('person')} onDelete={deletePerson} />}
         {view === 'assignments' && <Assignments departments={filteredDepartments} people={people} onAssign={assign} />}
@@ -464,8 +472,41 @@ function NavItem({ icon, label, active, onClick, badge }: { icon: React.ReactNod
 function Header({ eyebrow, title, text, action }: { eyebrow: string; title: string; text: string; action?: React.ReactNode }) { const displayTitle = title === 'Buenos días, Administrador' ? 'Buenos días, Derick' : title; return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{displayTitle}</h1><p>{text}</p></div>{action}</div>; }
 function Dashboard({ stats, onNavigate }: { stats: Record<string, number>; onNavigate: (v: View) => void }) { return <><Header eyebrow="Resumen operativo" title="Buenos días, Administrador" text="Aquí tienes una vista clara de la estructura y el estado actual de tu organización." action={<button className="primary-button" onClick={() => onNavigate('assignments')}><BriefcaseBusiness size={17} /> Gestionar asignaciones</button>} /><div className="stats-grid">{[['departments','Departamentos','Catálogo oficial'],['areas','Áreas','Estructura activa'],['positions','Cargos','Total registrados'],['occupied','Ocupados','Asignados actualmente'],['vacancies','Vacantes','Requieren asignación'],['people','Personas','Personal activo']].map(([key, label, caption]) => <div className="stat-card" key={key}><div className="stat-top"><span>{label}</span><ArrowUpRight size={16} /></div><strong>{stats[key]}</strong><small>{caption}</small></div>)}</div><div className="dashboard-grid"><section className="panel activity-panel"><div className="panel-heading"><div><div className="eyebrow">Actividad</div><h2>Estado de asignaciones</h2></div><button className="quiet-button" onClick={() => onNavigate('assignments')}>Ver detalle <ArrowUpRight size={15} /></button></div><div className="empty-chart"><div className="chart-ring" style={{ '--progress': stats.positions ? `${(stats.occupied / stats.positions) * 100}%` : '0%' } as React.CSSProperties}><strong>{stats.positions ? Math.round((stats.occupied / stats.positions) * 100) : 0}%</strong><span>ocupación</span></div><div className="legend"><span><i className="dot green" /> Cargos ocupados <b>{stats.occupied}</b></span><span><i className="dot red" /> Cargos vacantes <b>{stats.vacancies}</b></span></div></div></section><section className="panel quick-panel"><div className="panel-heading"><div><div className="eyebrow">Acciones rápidas</div><h2>Continúa tu trabajo</h2></div></div><QuickAction icon={<Building2 size={19} />} text="Configurar organización" onClick={() => onNavigate('organization')} /><QuickAction icon={<UserRound size={19} />} text="Registrar una persona" onClick={() => onNavigate('people')} /><QuickAction icon={<BriefcaseBusiness size={19} />} text="Revisar cargos vacantes" onClick={() => onNavigate('vacancies')} /></section></div><div className="info-banner"><div className="banner-icon"><Archive size={20} /></div><div><strong>Todo está guardado en este equipo</strong><p>T Maestro funciona sin conexión. Tus datos permanecen en el almacenamiento local de esta aplicación.</p></div><button className="quiet-button" onClick={() => onNavigate('settings')}>Configuración <ArrowUpRight size={15} /></button></div></>; }
 function QuickAction({ icon, text, onClick }: { icon: React.ReactNode; text: string; onClick: () => void }) { return <button className="quick-action" onClick={onClick}><span>{icon}</span>{text}<ArrowUpRight size={16} /></button>; }
-function Organization({ departments, people, selected, selectedId, onSelect, onAdd, onDelete, onAssign }: { departments: Department[]; people: Person[]; selected?: Department; selectedId: string; onSelect: (id: string) => void; onAdd: (type: 'department' | 'area' | 'position' | 'person') => void; onDelete: (type: 'department' | 'area' | 'position', id: string) => void; onAssign: (positionId: string, personId: string) => void }) {
-  return <><Header eyebrow="Estructura organizacional" title="Organización" text="Administra departamentos, áreas y cargos desde una sola vista." action={<button className="primary-button" onClick={() => onAdd('department')}><Plus size={17} /> Nuevo departamento</button>} /><div className="org-layout"><section className="panel org-tree"><div className="panel-heading"><div><h2>Departamentos</h2><p>{departments.length} departamentos oficiales</p></div><Building2 size={20} className="muted-icon" /></div><div className="tree-list">{departments.map(d => <div className={`tree-department-row ${selectedId === d.id ? 'selected' : ''}`} key={d.id}><button className="tree-department" onClick={() => onSelect(d.id)}><span className="tree-dot" />{d.name}<span className="tree-count">{d.areas.reduce((n, a) => n + a.positions.length, 0)}</span></button><button className="delete-button" title="Eliminar departamento" onClick={() => onDelete('department', d.id)}><X size={15} /></button></div>)}</div></section><section className="panel org-detail"><div className="panel-heading"><div><div className="eyebrow">Departamento seleccionado</div><h2>{selected?.name || 'Sin departamento'}</h2><p>{selected?.areas.length || 0} áreas · {selected?.areas.reduce((n, a) => n + a.positions.length, 0) || 0} cargos</p></div><div className="header-actions"><button className="secondary-button" disabled={!selected} onClick={() => onAdd('area')}><Plus size={16} /> Nueva área</button><button className="delete-button" title="Eliminar departamento" disabled={!selected} onClick={() => selected && onDelete('department', selected.id)}><X size={17} /></button></div></div>{selected?.areas.length ? <><div className="org-table-header"><span>Cargo</span><span>Persona que ocupa el cargo</span><span>Estado</span></div>{selected.areas.map(area => <div className="area-block" key={area.id}><div className="area-heading"><span><Building2 size={16} />{area.name}</span><div className="area-actions"><button className="text-button" onClick={() => onAdd('position')}><Plus size={14} /> Cargo</button><button className="delete-button" title="Eliminar área" onClick={() => onDelete('area', area.id)}><X size={15} /></button></div></div>{area.positions.length ? area.positions.map(position => <div className="position-row" key={position.id}><BriefcaseBusiness size={16} /><span>{position.name}</span><PositionPersonPicker people={people} personId={position.personId} onAssign={personId => onAssign(position.id, personId)} /><StatusBadge occupied={!!position.personId} /><button className="delete-button" title="Eliminar cargo" onClick={() => onDelete('position', position.id)}><X size={15} /></button></div>) : <div className="mini-empty">Sin cargos en esta área</div>}</div>)}</> : <EmptyState icon={<Building2 size={30} />} title="Empieza a construir la estructura" text="Añade un área para organizar los cargos de este departamento." action={<button className="secondary-button" onClick={() => onAdd('area')}><Plus size={16} /> Nueva área</button>} />}</section></div></>;
+function Organization({ departments, people, selected, selectedId, onSelect, onAdd, onDelete, onAssign, onRename }: { departments: Department[]; people: Person[]; selected?: Department; selectedId: string; onSelect: (id: string) => void; onAdd: (type: 'department' | 'area' | 'position' | 'person') => void; onDelete: (type: 'department' | 'area' | 'position', id: string) => void; onAssign: (positionId: string, personId: string) => void; onRename: (positionId: string, name: string) => void }) {
+  return <>
+    <Header eyebrow="Estructura organizacional" title="Organización" text="Administra departamentos, áreas y cargos desde una sola vista." action={<button className="primary-button" onClick={() => onAdd('department')}><Plus size={17} /> Nuevo departamento</button>} />
+    <div className="org-layout">
+      <section className="panel org-tree">
+        <div className="panel-heading"><div><h2>Departamentos</h2><p>{departments.length} departamentos oficiales</p></div><Building2 size={20} className="muted-icon" /></div>
+        <div className="tree-list">{departments.map(department => <div className={`tree-department-row ${selectedId === department.id ? 'selected' : ''}`} key={department.id}><button className="tree-department" onClick={() => onSelect(department.id)}><span className="tree-dot" />{department.name}<span className="tree-count">{department.areas.reduce((count, area) => count + area.positions.length, 0)}</span></button><button className="delete-button" title="Eliminar departamento" onClick={() => onDelete('department', department.id)}><X size={15} /></button></div>)}</div>
+      </section>
+      <section className="panel org-detail">
+        <div className="panel-heading"><div><div className="eyebrow">Departamento seleccionado</div><h2>{selected?.name || 'Sin departamento'}</h2><p>{selected?.areas.length || 0} áreas · {selected?.areas.reduce((count, area) => count + area.positions.length, 0) || 0} cargos</p></div><div className="header-actions"><button className="secondary-button" disabled={!selected} onClick={() => onAdd('area')}><Plus size={16} /> Nueva área</button><button className="delete-button" title="Eliminar departamento" disabled={!selected} onClick={() => selected && onDelete('department', selected.id)}><X size={17} /></button></div></div>
+        {selected?.areas.length ? <>
+          <div className="org-table-header"><span>Cargo</span><span>Persona que ocupa el cargo</span><span>Estado</span></div>
+          {selected.areas.map(area => <div className="area-block" key={area.id}>
+            <div className="area-heading"><span><Building2 size={16} />{area.name}</span><div className="area-actions"><button className="text-button" onClick={() => onAdd('position')}><Plus size={14} /> Cargo</button><button className="delete-button" title="Eliminar área" onClick={() => onDelete('area', area.id)}><X size={15} /></button></div></div>
+            {area.positions.length ? area.positions.map(position => <div className="position-row" key={position.id}><BriefcaseBusiness size={16} /><PositionNameEditor name={position.name} onSave={name => onRename(position.id, name)} /><PositionPersonPicker people={people} personId={position.personId} onAssign={personId => onAssign(position.id, personId)} /><StatusBadge occupied={!!position.personId} /><button className="delete-button" title="Eliminar cargo" onClick={() => onDelete('position', position.id)}><X size={15} /></button></div>) : <div className="mini-empty">Sin cargos en esta área</div>}
+          </div>)}
+        </> : <EmptyState icon={<Building2 size={30} />} title="Empieza a construir la estructura" text="Añade un área para organizar los cargos de este departamento." action={<button className="secondary-button" onClick={() => onAdd('area')}><Plus size={16} /> Nueva área</button>} />}
+      </section>
+    </div>
+  </>;
+}
+
+function PositionNameEditor({ name, onSave }: { name: string; onSave: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+  const save = () => {
+    if (value.trim()) onSave(value);
+    else setValue(name);
+    setEditing(false);
+  };
+  return editing ? <div className="position-name-editor"><input ref={inputRef} aria-label="Nuevo nombre del cargo" value={value} onChange={event => setValue(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') save(); if (event.key === 'Escape') { setValue(name); setEditing(false); } }} /><button type="button" className="rename-button" title="Guardar nombre" aria-label="Guardar nombre" onClick={save}><Check size={15} /></button></div> : <div className="position-name-editor"><span>{name}</span><button type="button" className="rename-button" title="Cambiar nombre del cargo" aria-label={`Cambiar nombre de ${name}`} onClick={() => { setValue(name); setEditing(true); }}><Pencil size={14} /></button></div>;
 }
 
 function PositionPersonPicker({ people, personId, assignmentConflict = people.find(person => person.id === personId)?.assignmentConflict || false, onAssign }: { people: Person[]; personId?: string; assignmentConflict?: boolean; onAssign: (personId: string) => void }) {

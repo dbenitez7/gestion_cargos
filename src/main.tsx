@@ -15,7 +15,8 @@ type Area = { id: string; name: string; active: boolean; positions: Position[] }
 type Position = { id: string; name: string; active: boolean; personId?: string; assignmentConflict?: boolean };
 type Person = { id: string; fullName: string; identification?: string; active: boolean; assignmentConflict?: boolean };
 type View = 'dashboard' | 'organization' | 'tree' | 'people' | 'assignments' | 'vacancies' | 'unassigned' | 'history' | 'settings';
-type ImportedRow = { department: string; area: string; position: string; person: string };
+type ImportedRow = { department: string; area: string; position: string; person: string; identification: string };
+type ProjectBackup = { format: 't-maestro-project'; version: 1; departments: Department[]; people: Person[]; approvedConflicts: string[]; selectedDepartment: string; view: View; query: string };
 
 const baseDepartments = [
   'Misiones Locales', 'Misiones Extranjeras', 'Educación Cristiana', 'Decom',
@@ -53,22 +54,39 @@ function persist<T>(key: string, value: T) {
 function parseWorkbook(buffer: ArrayBuffer): ImportedRow[] {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
-  const header = (value: unknown) => String(value).trim().toUpperCase();
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false });
+  const normalizeHeader = (value: unknown) => clean(String(value)).replace(/[^a-z0-9]+/g, ' ').trim();
+  const aliases = {
+    department: ['departamento', 'departamento dependencia', 'dependencia'],
+    area: ['area'],
+    position: ['cargo', 'cargos', 'puesto', 'posicion'],
+    person: ['nombre', 'nombres', 'persona', 'responsable', 'nombre completo', 'nombres completos', 'nombre y apellido', 'nombres y apellidos', 'apellidos y nombres', 'nombre de la persona', 'persona responsable'],
+    identification: ['numero de identificacion', 'numero identificacion', 'identificacion', 'documento', 'cedula']
+  };
+  const headerRowIndex = matrix.slice(0, 10).findIndex(row => row.some(cell => Object.values(aliases).some(values => values.includes(normalizeHeader(cell)))));
+  const headerRow = headerRowIndex >= 0 ? matrix[headerRowIndex] : [];
+  const columnFor = (field: keyof typeof aliases, fallback: number) => {
+    const index = headerRow.findIndex(cell => aliases[field].includes(normalizeHeader(cell)));
+    return index >= 0 ? index : headerRowIndex < 0 ? fallback : -1;
+  };
+  const columns = {
+    department: columnFor('department', 0),
+    area: columnFor('area', 1),
+    position: columnFor('position', 2),
+    person: columnFor('person', 3),
+    identification: columnFor('identification', 4)
+  };
+  const dataRows = matrix.slice(headerRowIndex >= 0 ? headerRowIndex + 1 : 0);
   let currentDepartment = '';
   let currentArea = '';
-  return rows.map(row => {
-    const values = Object.entries(row);
-    const get = (names: string[], fallback: number) => {
-      const entry = values.find(([key]) => names.includes(header(key)));
-      return String(entry?.[1] ?? values[fallback]?.[1] ?? '').trim();
-    };
-    const department = get(['DEPARTAMENTO', 'DEPARTAMENTO/DEPENDENCIA'], 0);
-    const area = get(['AREA', 'ÁREA'], 1);
+  return dataRows.map(row => {
+    const get = (index: number) => index < 0 ? '' : String(row[index] ?? '').trim();
+    const department = get(columns.department);
+    const area = get(columns.area);
     if (department) { currentDepartment = department; currentArea = ''; }
     if (area) currentArea = area;
-    return { department: currentDepartment, area: currentArea, position: get(['CARGO', 'CARGOS', 'PUESTO'], 2), person: get(['NOMBRES', 'NOMBRE', 'PERSONA', 'RESPONSABLE'], 3) };
-  }).filter(row => row.department || row.area || row.position || row.person);
+    return { department: currentDepartment, area: currentArea, position: get(columns.position), person: get(columns.person), identification: get(columns.identification) };
+  }).filter(row => row.department || row.area || row.position || row.person || row.identification);
 }
 
 function clean(value: string) { return value.trim().replace(/\s+/g, ' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase(); }
@@ -94,7 +112,7 @@ function buildDepartmentsFromRows(rows: ImportedRow[], existing: Department[], p
     if (!row.person || positionNames.has(clean(row.person)) || personIds.has(clean(row.person))) return;
     const id = `person-import-${personIds.size + newPeople.length + 1}`;
     personIds.set(clean(row.person), id);
-    newPeople.push({ id, fullName: row.person, active: true });
+    newPeople.push({ id, fullName: row.person, identification: row.identification || undefined, active: true });
   });
   const existingOfficial = normalizeDepartments(existing);
   const departments = baseDepartments.map((name, departmentIndex) => {
@@ -128,12 +146,26 @@ function buildDepartmentsFromRows(rows: ImportedRow[], existing: Department[], p
   return { departments, newPeople };
 }
 
+function withImportedIdentifications(people: Person[], rows: ImportedRow[]) {
+  const identifications = new Map<string, string>();
+  rows.forEach(row => {
+    const name = clean(row.person);
+    const identification = row.identification.trim();
+    if (name && identification) identifications.set(name, identification);
+  });
+  return people.map(person => {
+    const identification = identifications.get(clean(person.fullName));
+    return identification ? { ...person, identification } : person;
+  });
+}
+
 function rowsFromDepartments(departments: Department[], people: Person[]): ImportedRow[] {
   return departments.flatMap(department => department.areas.flatMap(area => area.positions.map(position => ({
     department: department.name,
     area: area.name,
     position: position.name,
-    person: position.personId ? people.find(person => person.id === position.personId)?.fullName || '' : ''
+    person: position.personId ? people.find(person => person.id === position.personId)?.fullName || '' : '',
+    identification: position.personId ? people.find(person => person.id === position.personId)?.identification || '' : ''
   }))));
 }
 
@@ -169,7 +201,7 @@ function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = filename; anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function imageAsDataUrl(path: string) {
@@ -193,6 +225,7 @@ function App() {
   const [modal, setModal] = useState<'department' | 'area' | 'position' | 'person' | null>(null);
   const [notice, setNotice] = useState('');
   const treeViewRef = useRef<HTMLDivElement>(null);
+  const userImportStartedRef = useRef(false);
 
   useEffect(() => persist('tm-departments', departments), [departments]);
   const conflictingAssignments = useMemo(() => getConflictingAssignments(departments, storedPeople), [departments, storedPeople]);
@@ -220,9 +253,13 @@ function App() {
     if (localStorage.getItem('tm-catalog-version') === 'base-ods-v3') return;
     fetch('/base.ods').catch(() => fetch('/departamentos.ods'))
       .then(response => response.arrayBuffer())
-      .then(buffer => { importRows(parseWorkbook(buffer)); localStorage.setItem('tm-catalog-version', 'base-ods-v3'); })
+      .then(buffer => {
+        if (userImportStartedRef.current) return;
+        importRows(parseWorkbook(buffer));
+        localStorage.setItem('tm-catalog-version', 'base-ods-v3');
+      })
       .catch(() => setNotice('El archivo de referencia no está disponible para importar'));
-  }, [departments]);
+  }, []);
 
   const allPositions = useMemo(() => departments.flatMap(d => d.areas.flatMap(a => a.positions)), [departments]);
   useEffect(() => {
@@ -315,9 +352,27 @@ function App() {
   }
 
   function importRows(rows: ImportedRow[]) {
+    if (!rows.some(row => row.department && row.position)) {
+      const knownNames = new Set(people.map(person => clean(person.fullName)));
+      const newPeople = rows.flatMap(row => {
+        const name = row.person.trim();
+        const key = clean(name);
+        if (!key || knownNames.has(key)) return [];
+        knownNames.add(key);
+        return [{ id: `person-import-${Date.now()}-${knownNames.size}`, fullName: name, identification: row.identification || undefined, active: true }];
+      });
+      if (newPeople.length || rows.some(row => row.person && row.identification)) {
+        setPeople(current => withImportedIdentifications([...current, ...newPeople], rows));
+      }
+      setNotice(`Importación completada: ${newPeople.length} personas nuevas`);
+      window.setTimeout(() => setNotice(''), 4000);
+      return;
+    }
     const result = buildDepartmentsFromRows(rows, departments, people, true);
     setDepartments(result.departments);
-    if (result.newPeople.length) setPeople(current => [...current, ...result.newPeople]);
+    if (result.newPeople.length || rows.some(row => row.person && row.identification)) {
+      setPeople(current => withImportedIdentifications([...current, ...result.newPeople], rows));
+    }
     localStorage.setItem('tm-reference-imported', 'true');
     setSelectedDepartment(result.departments[0]?.id || '');
     setNotice(`Importación completada: ${rows.length} filas, ${result.newPeople.length} personas nuevas`);
@@ -325,11 +380,31 @@ function App() {
   }
 
   function importFile(file: File) {
+    userImportStartedRef.current = true;
+    if (file.name.toLocaleLowerCase().endsWith('.json')) {
+      file.text().then(text => {
+        const backup = JSON.parse(text) as ProjectBackup;
+        if (backup.format !== 't-maestro-project' || backup.version !== 1 || !Array.isArray(backup.departments) || !Array.isArray(backup.people) || !Array.isArray(backup.approvedConflicts)) {
+          throw new Error('Formato de respaldo no válido');
+        }
+        setDepartments(backup.departments);
+        setPeople(backup.people);
+        setApprovedConflicts(backup.approvedConflicts);
+        setSelectedDepartment(backup.selectedDepartment || backup.departments[0]?.id || '');
+        setView(backup.view);
+        setQuery(backup.query || '');
+        localStorage.setItem('tm-catalog-version', 'base-ods-v3');
+        setNotice('Proyecto restaurado correctamente');
+        window.setTimeout(() => setNotice(''), 4000);
+      }).catch(() => setNotice('No se pudo restaurar: el archivo JSON no es un respaldo válido'));
+      return;
+    }
     file.arrayBuffer().then(buffer => importRows(parseWorkbook(buffer))).catch(() => setNotice('No se pudo leer el archivo seleccionado'));
   }
 
   function resetProcess() {
     if (!window.confirm('Se borrarán únicamente las personas asignadas a los cargos. Los cargos, departamentos y áreas se conservarán. ¿Continuar?')) return;
+    userImportStartedRef.current = true;
     setPeople([]);
     fetch('/base.ods').catch(() => fetch('/departamentos.ods'))
       .then(response => response.arrayBuffer())
@@ -341,6 +416,35 @@ function App() {
       })
       .catch(() => setNotice('No se pudo restaurar el catálogo de cargos'));
     window.setTimeout(() => setNotice(''), 3500);
+  }
+
+  function clearAllData() {
+    if (!window.confirm('Se borrarán todos los departamentos, áreas, cargos, personas y asignaciones guardados en este equipo. Esta acción no se puede deshacer. ¿Continuar?')) return;
+    userImportStartedRef.current = true;
+    ['tm-departments', 'tm-departments-backup', 'tm-people', 'tm-people-backup', 'tm-approved-conflicts', 'tm-approved-conflicts-backup', 'tm-reference-imported'].forEach(key => localStorage.removeItem(key));
+    localStorage.setItem('tm-catalog-version', 'base-ods-v3');
+    setDepartments([]);
+    setPeople([]);
+    setApprovedConflicts([]);
+    setSelectedDepartment('');
+    setView('dashboard');
+    setQuery('');
+    setNotice('Todos los datos del proyecto se borraron');
+    window.setTimeout(() => setNotice(''), 4000);
+  }
+
+  function exportProject() {
+    const backup: ProjectBackup = {
+      format: 't-maestro-project',
+      version: 1,
+      departments,
+      people: storedPeople,
+      approvedConflicts,
+      selectedDepartment,
+      view,
+      query
+    };
+    downloadBlob(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }), 't-maestro-proyecto.json');
   }
 
   async function exportExcel() {
@@ -461,7 +565,7 @@ function App() {
         {view === 'vacancies' && <Vacancies departments={departments} onAssign={() => setView('assignments')} />}
         {view === 'unassigned' && <Unassigned people={people} assignedIds={assignedPeopleIds} onAdd={() => setModal('person')} />}
         {view === 'history' && <EmptyState icon={<History size={30} />} title="Historial local" text="Las asignaciones y cambios aparecerán aquí." />}
-        {view === 'settings' && <Settings onImport={importFile} onExportExcel={exportExcel} onExportPdf={exportPdfColumns} onReset={resetProcess} />}
+        {view === 'settings' && <Settings onImport={importFile} onExportExcel={exportExcel} onExportPdf={exportPdfColumns} onExportProject={exportProject} onReset={resetProcess} onClearAll={clearAllData} />}
       </section>
     </main>
     {modal && <EntityModal type={modal} departments={departments} onClose={() => setModal(null)} onSave={addEntity} />}
@@ -541,7 +645,7 @@ type AssignmentPosition = Position & { department: string; area: string };
 function Assignments({ departments, people, onAssign }: { departments: Department[]; people: Person[]; onAssign: (positionId: string, personId: string) => void }) { const [selectedPosition, setSelectedPosition] = useState<AssignmentPosition | null>(null); const [search, setSearch] = useState(''); const positions: AssignmentPosition[] = departments.flatMap(d => d.areas.flatMap(a => a.positions.map(p => ({ ...p, department: d.name, area: a.name })))); const results = people.filter(p => p.fullName.toLowerCase().includes(search.toLowerCase())); return <><Header eyebrow="Trabajo principal" title="Asignaciones" text="Selecciona un cargo y asigna manualmente una persona." /><div className="assignment-layout"><section className="panel assignment-tree"><div className="panel-heading"><h2>Cargos</h2><span className="count-label">{positions.length}</span></div><div className="assignment-list">{positions.map(p => <button className={`assignment-item ${selectedPosition?.id === p.id ? 'selected' : ''}`} key={p.id} onClick={() => setSelectedPosition(p)}><span><BriefcaseBusiness size={15} />{p.name}<small>{p.department} · {p.area}</small></span><StatusBadge occupied={!!p.personId} /></button>)}</div>{!positions.length && <div className="mini-empty">Crea cargos en Organización para comenzar.</div>}</section><section className="panel assignment-focus">{selectedPosition ? <><div className="eyebrow">Cargo seleccionado</div><h2>{selectedPosition.name}</h2><p className="muted-copy">{selectedPosition.department} · {selectedPosition.area}</p><div className="focus-status"><StatusBadge occupied={!!selectedPosition.personId} /><p>{selectedPosition.personId ? people.find(p => p.id === selectedPosition.personId)?.fullName : 'Este cargo está disponible para asignación'}</p></div></> : <EmptyState icon={<BriefcaseBusiness size={30} />} title="Selecciona un cargo" text="Elige un cargo del árbol para ver su información y asignar una persona." />}</section><section className="panel people-picker"><div className="panel-heading"><div><h2>Personas</h2><p>Asignación manual</p></div></div><div className="inner-search"><Search size={16} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar persona..." /></div>{selectedPosition && results.map(p => <div className="picker-row" key={p.id}><div className="person-cell"><div className="small-avatar">{p.fullName.slice(0, 2).toUpperCase()}</div><div><strong>{p.fullName}</strong><small>{people.filter(x => x.id === p.id).length ? 'Disponible para asignar' : ''}</small></div></div><button className="assign-button" onClick={() => onAssign(selectedPosition.id, p.id)}>Asignar</button></div>)}{!selectedPosition && <div className="mini-empty">Selecciona un cargo para buscar personas.</div>}{selectedPosition && !results.length && <div className="mini-empty">No hay coincidencias.</div>}</section></div></>; }
 function Vacancies({ departments, onAssign }: { departments: Department[]; onAssign: () => void }) { const vacancies = departments.flatMap(d => d.areas.flatMap(a => a.positions.filter(p => !p.personId).map(p => ({ ...p, department: d.name, area: a.name })))); return <><Header eyebrow="Seguimiento" title="Cargos vacantes" text="Identifica rápidamente los cargos que aún necesitan una asignación." action={<button className="primary-button" onClick={onAssign}><BriefcaseBusiness size={17} /> Asignar persona</button>} /><section className="panel table-panel"><div className="table-toolbar"><div className="table-title"><span className="red-icon"><BriefcaseBusiness size={18} /></span><strong>{vacancies.length} cargos vacantes</strong></div></div>{vacancies.length ? <table><thead><tr><th>Cargo</th><th>Departamento</th><th>Área</th><th /></tr></thead><tbody>{vacancies.map(v => <tr key={v.id}><td><strong>{v.name}</strong></td><td>{v.department}</td><td>{v.area}</td><td><button className="assign-button" onClick={onAssign}>Asignar</button></td></tr>)}</tbody></table> : <EmptyState icon={<BriefcaseBusiness size={30} />} title="No hay cargos vacantes" text="Crea cargos en Organización para hacer seguimiento a la ocupación." />}</section></>; }
 function Unassigned({ people, assignedIds, onAdd }: { people: Person[]; assignedIds: Set<string>; onAdd: () => void }) { const unassigned = people.filter(p => !assignedIds.has(p.id)); return <><Header eyebrow="Seguimiento" title="Personal sin cargo" text="Personas registradas que todavía no tienen una asignación activa." action={<button className="primary-button" onClick={onAdd}><Plus size={17} /> Nueva persona</button>} /><section className="panel table-panel"><div className="table-toolbar"><div className="table-title"><span className="orange-icon"><UserRound size={18} /></span><strong>{unassigned.length} personas sin cargo</strong></div></div>{unassigned.length ? <table><thead><tr><th>Persona</th><th>Estado</th><th /></tr></thead><tbody>{unassigned.map(p => <tr key={p.id}><td><div className="person-cell"><div className="small-avatar">{p.fullName.slice(0, 2).toUpperCase()}</div><strong>{p.fullName}</strong></div></td><td><span className="status warning"><i />Sin cargo</span></td><td><button className="assign-button">Asignar</button></td></tr>)}</tbody></table> : <EmptyState icon={<UserRound size={30} />} title="No hay personas sin cargo" text="Registra personas o importa el archivo de personal." />}</section></>; }
-function Settings({ onImport, onExportExcel, onExportPdf, onReset }: { onImport: (file: File) => void; onExportExcel: () => void; onExportPdf: () => void; onReset: () => void }) { return <><Header eyebrow="Preferencias y datos" title="Configuración" text="Controla la información local y el comportamiento de la aplicación." /><div className="settings-grid"><section className="panel settings-card"><div className="settings-icon"><FileUp size={19} /></div><h2>Importar datos</h2><p>Lee archivos ODS, XLSX, XLS o CSV y completa la estructura sin duplicar cargos.</p><label className="secondary-button file-button"><FileUp size={16} /> Seleccionar archivo<input type="file" accept=".ods,.xlsx,.xls,.csv" onChange={event => { const file = event.target.files?.[0]; if (file) onImport(file); event.currentTarget.value = ''; }} /></label></section><section className="panel settings-card"><div className="settings-icon"><FileDown size={19} /></div><h2>Exportar directivas</h2><p>Genera documentos profesionales con el encabezado institucional y todas las asignaciones.</p><div className="header-actions"><button className="secondary-button" onClick={onExportExcel}><FileDown size={16} /> Excel</button><button className="secondary-button" onClick={onExportPdf}><FileDown size={16} /> PDF</button></div></section><section className="panel settings-card danger-card"><div className="settings-icon"><Archive size={19} /></div><h2>Reiniciar proceso</h2><p>Conserva departamentos, áreas y cargos; elimina únicamente personas y asignaciones.</p><button className="secondary-button" onClick={onReset}><Archive size={16} /> Reiniciar asignaciones</button></section></div></>; }
+function Settings({ onImport, onExportExcel, onExportPdf, onExportProject, onReset, onClearAll }: { onImport: (file: File) => void; onExportExcel: () => void; onExportPdf: () => void; onExportProject: () => void; onReset: () => void; onClearAll: () => void }) { return <><Header eyebrow="Preferencias y datos" title="Configuración" text="Controla la información local y el comportamiento de la aplicación." /><div className="settings-grid"><section className="panel settings-card"><div className="settings-icon"><FileUp size={19} /></div><h2>Importar datos</h2><p>Importa listados ODS, XLSX, XLS o CSV, o restaura un proyecto completo JSON.</p><label className="secondary-button file-button"><FileUp size={16} /> Seleccionar archivo<input type="file" accept=".ods,.xlsx,.xls,.csv,.json,application/json" onChange={event => { const file = event.target.files?.[0]; if (file) onImport(file); event.currentTarget.value = ''; }} /></label></section><section className="panel settings-card"><div className="settings-icon"><FileDown size={19} /></div><h2>Exportar datos</h2><p>Guarda un respaldo completo para continuar el trabajo en otro momento o dispositivo.</p><div className="header-actions"><button className="secondary-button" onClick={onExportProject}><FileDown size={16} /> Proyecto JSON</button><button className="secondary-button" onClick={onExportExcel}><FileDown size={16} /> Excel</button><button className="secondary-button" onClick={onExportPdf}><FileDown size={16} /> PDF</button></div></section><section className="panel settings-card danger-card"><div className="settings-icon"><Archive size={19} /></div><h2>Reiniciar proceso</h2><p>Conserva departamentos, áreas y cargos; elimina únicamente personas y asignaciones.</p><button className="secondary-button" onClick={onReset}><Archive size={16} /> Reiniciar asignaciones</button><p>Borra por completo los datos locales del proyecto. Puedes recuperar el estado anterior importando un respaldo JSON.</p><button className="secondary-button" onClick={onClearAll}><X size={16} /> Borrar todos los datos</button></section></div></>; }
 function EmptyState({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action?: React.ReactNode }) { return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p>{action}</div>; }
 function EntityModal({ type, departments, onClose, onSave }: { type: 'department' | 'area' | 'position' | 'person'; departments: Department[]; onClose: () => void; onSave: (value: string, type: 'department' | 'area' | 'position' | 'person', parentId?: string) => void }) { const [value, setValue] = useState(''); const [parent, setParent] = useState(departments[0]?.id || ''); const [area, setArea] = useState(departments[0]?.areas[0]?.id || ''); const label = type === 'department' ? 'departamento' : type === 'area' ? 'área' : type === 'position' ? 'cargo' : 'persona'; const current = departments.find(d => d.id === parent); return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal" onMouseDown={e => e.stopPropagation()}><div className="modal-heading"><div><div className="eyebrow">Nuevo registro</div><h2>Crear {label}</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><label>Nombre<input autoFocus value={value} onChange={e => setValue(e.target.value)} placeholder={`Nombre del ${label}`} onKeyDown={e => e.key === 'Enter' && onSave(value, type, type === 'department' || type === 'person' ? undefined : type === 'area' ? parent : area)} /></label>{type === 'area' && <label>Departamento<select value={parent} onChange={e => setParent(e.target.value)}>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>}{type === 'position' && <><label>Departamento<select value={parent} onChange={e => { setParent(e.target.value); setArea(departments.find(d => d.id === e.target.value)?.areas[0]?.id || '') }}>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label><label>Área opcional<select value={area} onChange={e => setArea(e.target.value)}><option value="">Sin área</option>{current?.areas.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label></>}<div className="modal-actions"><button className="secondary-button" onClick={onClose}>Cancelar</button><button className="primary-button" disabled={!value.trim() || (type === 'area' && !parent) || (type === 'position' && !area)} onClick={() => onSave(value, type, type === 'department' || type === 'person' ? undefined : type === 'area' ? parent : area)}>Guardar</button></div></div></div>; }
 

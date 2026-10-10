@@ -406,15 +406,28 @@ function App() {
     if (!window.confirm('Se borrarán únicamente las personas asignadas a los cargos. Los cargos, departamentos y áreas se conservarán. ¿Continuar?')) return;
     userImportStartedRef.current = true;
     setPeople([]);
-    fetch('/base.ods').catch(() => fetch('/departamentos.ods'))
-      .then(response => response.arrayBuffer())
-      .then(buffer => {
-        const result = buildDepartmentsFromRows(parseWorkbook(buffer), departments, [], false);
-        setDepartments(result.departments);
-        localStorage.setItem('tm-catalog-version', 'base-ods-v3');
-        setNotice('Proceso reiniciado: cargos conservados y asignaciones eliminadas');
-      })
-      .catch(() => setNotice('No se pudo restaurar el catálogo de cargos'));
+    if (departments.length === 0) {
+      fetch('/base.ods').catch(() => fetch('/departamentos.ods'))
+        .then(response => response.arrayBuffer())
+        .then(buffer => {
+          const rows = parseWorkbook(buffer).map(row => ({ ...row, person: '', identification: '' }));
+          const result = buildDepartmentsFromRows(rows, initialDepartments, [], false);
+          setDepartments(result.departments);
+          setSelectedDepartment(result.departments[0]?.id || '');
+          localStorage.setItem('tm-catalog-version', 'base-ods-v3');
+          setNotice('Catálogo predeterminado restaurado; nombres eliminados');
+        })
+        .catch(() => setNotice('No se pudo cargar el catálogo predeterminado'));
+    } else {
+      setDepartments(current => current.map(department => ({
+        ...department,
+        areas: department.areas.map(area => ({
+          ...area,
+          positions: area.positions.map(position => ({ ...position, personId: undefined }))
+        }))
+      })));
+      setNotice('Proceso reiniciado: estructura conservada y nombres eliminados');
+    }
     window.setTimeout(() => setNotice(''), 3500);
   }
 
